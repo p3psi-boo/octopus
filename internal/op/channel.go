@@ -40,7 +40,6 @@ func ChannelCreate(channel *model.Channel, ctx context.Context) error {
 }
 
 // ChannelKeyUpdate 仅更新 ChannelKey 的内存缓存（不落库），并标记为需要在 SaveCache 时写入数据库。
-// NOTE: Now uses in-place update with pointer slice to avoid COW copy overhead.
 func ChannelKeyUpdate(key model.ChannelKey) error {
 	if key.ID == 0 || key.ChannelID == 0 {
 		return fmt.Errorf("invalid channel key")
@@ -49,12 +48,16 @@ func ChannelKeyUpdate(key model.ChannelKey) error {
 	if !ok {
 		return fmt.Errorf("channel not found")
 	}
-	// In-place update with pointer slice - no COW copy needed
+	found := false
 	for _, k := range ch.Keys {
 		if k.ID == key.ID {
 			*k = key
+			found = true
 			break
 		}
+	}
+	if !found {
+		return fmt.Errorf("channel key %d not found in channel %d", key.ID, key.ChannelID)
 	}
 	channelCache.Set(key.ChannelID, ch)
 	channelKeyCache.Set(key.ID, key)
@@ -101,7 +104,8 @@ func ChannelKeySaveDB(ctx context.Context) error {
 		if !ok {
 			continue
 		}
-		keys = append(keys, k)
+		v := k
+		keys = append(keys, &v)
 	}
 
 	if len(keys) == 0 {
@@ -110,14 +114,23 @@ func ChannelKeySaveDB(ctx context.Context) error {
 
 	// 使用事务批量写入，减少 SQLite WAL 同步开销
 	dbConn := db.GetDB().WithContext(ctx)
-	return dbConn.Transaction(func(tx *gorm.DB) error {
+	if err := dbConn.Transaction(func(tx *gorm.DB) error {
 		for _, k := range keys {
 			if err := tx.Save(k).Error; err != nil {
 				return err
 			}
 		}
 		return nil
-	})
+	}); err != nil {
+		// 事务失败，将脏标记放回，下次重试
+		channelKeyCacheNeedUpdateLock.Lock()
+		for _, id := range keyIDs {
+			channelKeyCacheNeedUpdate[id] = struct{}{}
+		}
+		channelKeyCacheNeedUpdateLock.Unlock()
+		return err
+	}
+	return nil
 }
 
 func ChannelUpdate(req *model.ChannelUpdateRequest, ctx context.Context) (*model.Channel, error) {
@@ -379,10 +392,14 @@ func channelRefreshCache(ctx context.Context) error {
 		log.Warnf("failed to get channels: %v", err)
 		return err
 	}
-	channelKeyCache.Clear()
+
+	// 先构建完整的新数据，再一次性写入缓存，缩小不一致窗口
 	channelKeyCacheNeedUpdateLock.Lock()
 	channelKeyCacheNeedUpdate = make(map[int]struct{})
 	channelKeyCacheNeedUpdateLock.Unlock()
+
+	channelCache.Clear()
+	channelKeyCache.Clear()
 	for _, channel := range channels {
 		channelCache.Set(channel.ID, channel)
 		for _, k := range channel.Keys {
