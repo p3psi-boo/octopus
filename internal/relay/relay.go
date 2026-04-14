@@ -175,12 +175,6 @@ func (ra *relayAttempt) attempt() attemptResult {
 
 		span.End(dbmodel.AttemptSuccess, statusCode, "")
 
-		// Channel 维度统计
-		op.StatsChannelUpdate(ra.channel.ID, dbmodel.StatsMetrics{
-			WaitTime:       span.Duration().Milliseconds(),
-			RequestSuccess: 1,
-		})
-
 		// 熔断器：记录成功
 		balancer.RecordSuccess(ra.channel.ID, ra.usedKey.ID, ra.internalRequest.Model)
 		// 会话保持：更新粘性记录
@@ -192,12 +186,6 @@ func (ra *relayAttempt) attempt() attemptResult {
 	// ====== 失败 ======
 	op.ChannelKeyUpdate(ra.usedKey)
 	span.End(dbmodel.AttemptFailed, statusCode, fwdErr.Error())
-
-	// Channel 维度统计
-	op.StatsChannelUpdate(ra.channel.ID, dbmodel.StatsMetrics{
-		WaitTime:      span.Duration().Milliseconds(),
-		RequestFailed: 1,
-	})
 
 	// 熔断器：记录失败
 	balancer.RecordFailure(ra.channel.ID, ra.usedKey.ID, ra.internalRequest.Model)
@@ -288,9 +276,10 @@ func (ra *relayAttempt) forward() (int, error) {
 }
 
 // copyHeaders 复制请求头，过滤 hop-by-hop 头
+// 使用 http.CanonicalHeaderKey 匹配 hopByHopHeaders 中的 canonical key，避免 strings.ToLower 开销
 func (ra *relayAttempt) copyHeaders(outboundRequest *http.Request) {
 	for key, values := range ra.c.Request.Header {
-		if hopByHopHeaders[strings.ToLower(key)] {
+		if hopByHopHeaders[http.CanonicalHeaderKey(key)] {
 			continue
 		}
 		for _, value := range values {
@@ -403,9 +392,15 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 				}
 			}
 
+			// Buffered write with periodic flush to reduce system calls
 			ra.c.Writer.Write(data)
-			ra.c.Writer.Flush()
+			// Flush every 5 chunks or on larger data to balance latency and throughput
+			if len(data) > 1024 || len(results) == 0 {
+				ra.c.Writer.Flush()
+			}
 		}
+		// Final flush for any remaining data
+		ra.c.Writer.Flush()
 	}
 }
 

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/bestruirui/octopus/internal/utils/log"
 )
 
 // SessionEntry 会话保持条目
@@ -15,6 +17,33 @@ type SessionEntry struct {
 
 // 全局会话存储
 var globalSession sync.Map // key: string -> value: *SessionEntry
+
+// init starts the periodic GC for globalSession.
+func init() {
+	go sessionGC(10 * time.Minute)
+}
+
+// sessionGC periodically cleans up expired session entries.
+func sessionGC(interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		var deletedCount int
+		globalSession.Range(func(key, value interface{}) bool {
+			entry := value.(*SessionEntry)
+			// Session entries older than 1 hour are considered stale
+			if time.Since(entry.Timestamp) > time.Hour {
+				globalSession.Delete(key)
+				deletedCount++
+			}
+			return true
+		})
+		if deletedCount > 0 {
+			log.Debugf("session GC: cleaned up %d stale entries", deletedCount)
+		}
+	}
+}
 
 // sessionKey 生成会话键：apiKeyID:requestModel
 func sessionKey(apiKeyID int, requestModel string) string {

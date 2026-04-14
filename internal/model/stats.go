@@ -16,13 +16,13 @@ type StatsTotal struct {
 }
 
 type StatsHourly struct {
-	Hour int    `json:"hour" gorm:"primaryKey"`
-	Date string `json:"date" gorm:"not null"` // 记录最后更新日期，格式：20060102
+	Hour int `json:"hour" gorm:"primaryKey"`
+	Date int `json:"date" gorm:"not null"` // 记录最后更新日期，格式：year*1000 + yearday
 	StatsMetrics
 }
 
 type StatsDaily struct {
-	Date string `json:"date" gorm:"primaryKey"`
+	Date int `json:"date" gorm:"primaryKey"` // 格式：year*1000 + yearday
 	StatsMetrics
 }
 

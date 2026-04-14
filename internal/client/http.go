@@ -18,6 +18,7 @@ var (
 	systemProxyClient  *http.Client
 	systemProxyURL     string
 	clientLock         sync.RWMutex
+	customProxyClients sync.Map
 )
 
 // GetHTTPClientSystemProxy returns a cached http.Client.
@@ -78,13 +79,27 @@ func GetHTTPClientSystemProxy(useProxy bool) (*http.Client, error) {
 	return systemDirectClient, nil
 }
 
-// GetHTTPClientCustomProxy returns a NEW http.Client every time (no reuse).
+// GetHTTPClientCustomProxy returns a cached http.Client for the given proxyURL.
 // proxyURL supports: http, https, socks, socks5
 func GetHTTPClientCustomProxy(proxyURL string) (*http.Client, error) {
 	if proxyURL == "" {
 		return nil, fmt.Errorf("proxy url is empty")
 	}
-	return newHTTPClientCustomProxy(proxyURL)
+
+	if client, ok := customProxyClients.Load(proxyURL); ok {
+		return client.(*http.Client), nil
+	}
+
+	client, err := newHTTPClientCustomProxy(proxyURL)
+	if err != nil {
+		return nil, err
+	}
+
+	actualClient, loaded := customProxyClients.LoadOrStore(proxyURL, client)
+	if loaded {
+		return actualClient.(*http.Client), nil
+	}
+	return client, nil
 }
 
 func clonedDefaultTransport() (*http.Transport, error) {

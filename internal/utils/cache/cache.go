@@ -7,8 +7,36 @@ import (
 	"github.com/cespare/xxhash/v2"
 )
 
-func keyToString[K comparable](key K) string {
-	return fmt.Sprintf("%v", key)
+// keyToHash converts a key to a uint64 hash efficiently.
+// For int keys, it avoids fmt.Sprintf overhead which causes interface boxing + reflection.
+func keyToHash[K comparable](key K) uint64 {
+	switch k := any(key).(type) {
+	case int:
+		return uint64(k)
+	case int8:
+		return uint64(k)
+	case int16:
+		return uint64(k)
+	case int32:
+		return uint64(k)
+	case int64:
+		return uint64(k)
+	case uint:
+		return uint64(k)
+	case uint8:
+		return uint64(k)
+	case uint16:
+		return uint64(k)
+	case uint32:
+		return uint64(k)
+	case uint64:
+		return k
+	case string:
+		return xxhash.Sum64String(k)
+	default:
+		// Fallback for other types - use xxhash on the string representation
+		return xxhash.Sum64String(fmt.Sprintf("%v", key))
+	}
 }
 
 type Cache[K comparable, V any] interface {
@@ -43,13 +71,13 @@ type cache[K comparable, V any] struct {
 }
 
 func (c *cache[K, V]) Set(k K, v V) {
-	hashedKey := xxhash.Sum64String(keyToString(k))
+	hashedKey := keyToHash(k)
 	shard := c.getShard(hashedKey)
 	shard.set(k, v)
 }
 
 func (c *cache[K, V]) Get(k K) (V, bool) {
-	hashedKey := xxhash.Sum64String(keyToString(k))
+	hashedKey := keyToHash(k)
 	shard := c.getShard(hashedKey)
 	return shard.get(k)
 }
@@ -68,7 +96,7 @@ func (c *cache[K, V]) GetAll() map[K]V {
 func (c *cache[K, V]) Del(ks ...K) int {
 	var count int
 	for _, k := range ks {
-		hashedKey := xxhash.Sum64String(keyToString(k))
+		hashedKey := keyToHash(k)
 		shard := c.getShard(hashedKey)
 		count += shard.del(k)
 	}

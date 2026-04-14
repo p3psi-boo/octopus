@@ -10,6 +10,7 @@ import (
 	"github.com/bestruirui/octopus/internal/utils/cache"
 	"github.com/bestruirui/octopus/internal/utils/log"
 	"github.com/bestruirui/octopus/internal/utils/xstrings"
+	"gorm.io/gorm"
 )
 
 var channelCache = cache.New[int, model.Channel](16)
@@ -31,14 +32,15 @@ func ChannelCreate(channel *model.Channel, ctx context.Context) error {
 	}
 	channelCache.Set(channel.ID, *channel)
 	for _, k := range channel.Keys {
-		if k.ID != 0 {
-			channelKeyCache.Set(k.ID, k)
+		if k != nil && k.ID != 0 {
+			channelKeyCache.Set(k.ID, *k)
 		}
 	}
 	return nil
 }
 
 // ChannelKeyUpdate 仅更新 ChannelKey 的内存缓存（不落库），并标记为需要在 SaveCache 时写入数据库。
+// NOTE: Now uses in-place update with pointer slice to avoid COW copy overhead.
 func ChannelKeyUpdate(key model.ChannelKey) error {
 	if key.ID == 0 || key.ChannelID == 0 {
 		return fmt.Errorf("invalid channel key")
@@ -47,16 +49,12 @@ func ChannelKeyUpdate(key model.ChannelKey) error {
 	if !ok {
 		return fmt.Errorf("channel not found")
 	}
-	if len(ch.Keys) > 0 {
-		keys := make([]model.ChannelKey, len(ch.Keys))
-		copy(keys, ch.Keys)
-		for i := range keys {
-			if keys[i].ID == key.ID {
-				keys[i] = key
-				break
-			}
+	// In-place update with pointer slice - no COW copy needed
+	for _, k := range ch.Keys {
+		if k.ID == key.ID {
+			*k = key
+			break
 		}
-		ch.Keys = keys
 	}
 	channelCache.Set(key.ChannelID, ch)
 	channelKeyCache.Set(key.ID, key)
@@ -96,17 +94,30 @@ func ChannelKeySaveDB(ctx context.Context) error {
 		return nil
 	}
 
-	dbConn := db.GetDB().WithContext(ctx)
+	// 收集所有需要保存的 key
+	keys := make([]*model.ChannelKey, 0, len(keyIDs))
 	for _, id := range keyIDs {
 		k, ok := channelKeyCache.Get(id)
 		if !ok {
 			continue
 		}
-		if err := dbConn.Save(&k).Error; err != nil {
-			return err
-		}
+		keys = append(keys, k)
 	}
-	return nil
+
+	if len(keys) == 0 {
+		return nil
+	}
+
+	// 使用事务批量写入，减少 SQLite WAL 同步开销
+	dbConn := db.GetDB().WithContext(ctx)
+	return dbConn.Transaction(func(tx *gorm.DB) error {
+		for _, k := range keys {
+			if err := tx.Save(k).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func ChannelUpdate(req *model.ChannelUpdateRequest, ctx context.Context) (*model.Channel, error) {
@@ -375,8 +386,8 @@ func channelRefreshCache(ctx context.Context) error {
 	for _, channel := range channels {
 		channelCache.Set(channel.ID, channel)
 		for _, k := range channel.Keys {
-			if k.ID != 0 {
-				channelKeyCache.Set(k.ID, k)
+			if k != nil && k.ID != 0 {
+				channelKeyCache.Set(k.ID, *k)
 			}
 		}
 	}
@@ -386,7 +397,7 @@ func channelRefreshCache(ctx context.Context) error {
 func channelRefreshCacheByID(id int, ctx context.Context) error {
 	if old, ok := channelCache.Get(id); ok {
 		for _, k := range old.Keys {
-			if k.ID != 0 {
+			if k != nil && k.ID != 0 {
 				channelKeyCache.Del(k.ID)
 			}
 		}
@@ -400,8 +411,8 @@ func channelRefreshCacheByID(id int, ctx context.Context) error {
 	}
 	channelCache.Set(channel.ID, channel)
 	for _, k := range channel.Keys {
-		if k.ID != 0 {
-			channelKeyCache.Set(k.ID, k)
+		if k != nil && k.ID != 0 {
+			channelKeyCache.Set(k.ID, *k)
 		}
 	}
 	return nil

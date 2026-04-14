@@ -130,6 +130,13 @@ func (m *RelayMetrics) saveLog(ctx context.Context, err error, duration time.Dur
 		actualModel = m.RequestModel
 	}
 
+	// Limit attempts to prevent oversized JSON in relay_logs table
+	maxAttemptsToLog := 10
+	attemptsToLog := attempts
+	if len(attempts) > maxAttemptsToLog {
+		attemptsToLog = attempts[:maxAttemptsToLog]
+	}
+
 	relayLog := model.RelayLog{
 		Time:             m.StartTime.Unix(),
 		RequestModelName: m.RequestModel,
@@ -137,7 +144,7 @@ func (m *RelayMetrics) saveLog(ctx context.Context, err error, duration time.Dur
 		ChannelId:        channelID,
 		ActualModelName:  actualModel,
 		UseTime:          int(duration.Milliseconds()),
-		Attempts:         attempts,
+		Attempts:         attemptsToLog,
 		TotalAttempts:    len(attempts),
 	}
 
@@ -157,17 +164,24 @@ func (m *RelayMetrics) saveLog(ctx context.Context, err error, duration time.Dur
 		relayLog.Cost = m.Stats.InputCost + m.Stats.OutputCost
 	}
 
-	// 请求内容
+	// 请求内容（截断至 64KB 避免 SQLite overflow pages）
+	const maxContentSize = 64 * 1024
 	if m.InternalRequest != nil {
 		if reqJSON, jsonErr := json.Marshal(m.InternalRequest); jsonErr == nil {
+			if len(reqJSON) > maxContentSize {
+				reqJSON = reqJSON[:maxContentSize]
+			}
 			relayLog.RequestContent = string(reqJSON)
 		}
 	}
 
-	// 响应内容
+	// 响应内容（截断至 64KB 避免 SQLite overflow pages）
 	if m.InternalResponse != nil {
 		respForLog := m.filterResponseForLog(m.InternalResponse)
 		if respJSON, jsonErr := json.Marshal(respForLog); jsonErr == nil {
+			if len(respJSON) > maxContentSize {
+				respJSON = respJSON[:maxContentSize]
+			}
 			if m.InternalResponse.Usage != nil && m.InternalResponse.Usage.AnthropicUsage {
 				respStr := string(respJSON)
 				old := `"usage":{`

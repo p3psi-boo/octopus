@@ -31,6 +31,13 @@ type circuitEntry struct {
 // 全局熔断器存储
 var globalBreaker sync.Map // key: string -> value: *circuitEntry
 
+// atomic 缓存的熔断器配置（避免高并发时频繁查询设置）
+var (
+	atomicThreshold    atomic.Int64 // 熔断阈值，默认 5
+	atomicBaseCooldown atomic.Int64 // 基础冷却时间(秒)，默认 60
+	atomicMaxCooldown  atomic.Int64 // 最大冷却时间(秒)，默认 600
+)
+
 // circuitKey 生成熔断器键：channelID:channelKeyID:modelName
 func circuitKey(channelID, keyID int, modelName string) string {
 	return fmt.Sprintf("%d:%d:%s", channelID, keyID, modelName)
@@ -46,25 +53,74 @@ func getOrCreateEntry(key string) *circuitEntry {
 	return actual.(*circuitEntry)
 }
 
-// getThreshold 获取熔断阈值配置
-func getThreshold() int64 {
-	v, err := op.SettingGetInt(model.SettingKeyCircuitBreakerThreshold)
-	if err != nil || v <= 0 {
-		return 5
-	}
-	return int64(v)
+// init 初始化熔断器配置的默认值，并启动定期 GC。
+func init() {
+	atomicThreshold.Store(5)
+	atomicBaseCooldown.Store(60)
+	atomicMaxCooldown.Store(600)
+
+	go circuitGC(10 * time.Minute)
 }
 
-// GetCooldown 获取当前冷却时间（带指数退避）
+// circuitGC periodically cleans up stale circuit breaker entries.
+// Entries that have been in Closed state with no failures for over 1 hour are removed.
+func circuitGC(interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		var deletedCount int
+		now := time.Now()
+		globalBreaker.Range(func(key, value interface{}) bool {
+			entry := value.(*circuitEntry)
+			entry.mu.Lock()
+			// Remove if Closed and last failure was over 1 hour ago
+			// This indicates the channel is healthy and the entry can be safely removed
+			canDelete := entry.State == StateClosed && now.Sub(entry.LastFailureTime) > time.Hour
+			entry.mu.Unlock()
+			if canDelete {
+				globalBreaker.Delete(key)
+				deletedCount++
+			}
+			return true
+		})
+		if deletedCount > 0 {
+			log.Debugf("circuit breaker GC: cleaned up %d stale entries", deletedCount)
+		}
+	}
+}
+
+// RefreshCircuitConfig 从设置中刷新熔断器配置
+// 由外部调用（如设置变更时）来更新 atomic 缓存值
+func RefreshCircuitConfig() {
+	if v, err := op.SettingGetInt(model.SettingKeyCircuitBreakerThreshold); err == nil && v > 0 {
+		atomicThreshold.Store(int64(v))
+	} else {
+		atomicThreshold.Store(5)
+	}
+
+	if v, err := op.SettingGetInt(model.SettingKeyCircuitBreakerCooldown); err == nil && v > 0 {
+		atomicBaseCooldown.Store(int64(v))
+	} else {
+		atomicBaseCooldown.Store(60)
+	}
+
+	if v, err := op.SettingGetInt(model.SettingKeyCircuitBreakerMaxCooldown); err == nil && v > 0 {
+		atomicMaxCooldown.Store(int64(v))
+	} else {
+		atomicMaxCooldown.Store(600)
+	}
+}
+
+// getThreshold 获取熔断阈值配置（直接读取 atomic 值）
+func getThreshold() int64 {
+	return atomicThreshold.Load()
+}
+
+// GetCooldown 获取当前冷却时间（带指数退避，直接读取 atomic 值）
 func GetCooldown(tripCount int) time.Duration {
-	base, err := op.SettingGetInt(model.SettingKeyCircuitBreakerCooldown)
-	if err != nil || base <= 0 {
-		base = 60
-	}
-	maxCooldown, err := op.SettingGetInt(model.SettingKeyCircuitBreakerMaxCooldown)
-	if err != nil || maxCooldown <= 0 {
-		maxCooldown = 600
-	}
+	base := int(atomicBaseCooldown.Load())
+	maxCooldown := int(atomicMaxCooldown.Load())
 
 	// 指数退避：baseCooldown * 2^(tripCount-1)
 	cooldown := base

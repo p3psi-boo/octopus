@@ -16,22 +16,22 @@ const (
 )
 
 type Channel struct {
-	ID            int                   `json:"id" gorm:"primaryKey"`
-	Name          string                `json:"name" gorm:"unique;not null"`
-	Type          outbound.OutboundType `json:"type"`
-	Enabled       bool                  `json:"enabled" gorm:"default:true"`
-	BaseUrls      []BaseUrl             `json:"base_urls" gorm:"serializer:json"`
-	Keys          []ChannelKey          `json:"keys" gorm:"foreignKey:ChannelID"`
-	Model         string                `json:"model"`
-	CustomModel   string                `json:"custom_model"`
-	Proxy         bool                  `json:"proxy" gorm:"default:false"`
-	AutoSync      bool                  `json:"auto_sync" gorm:"default:false"`
-	AutoGroup     AutoGroupType         `json:"auto_group" gorm:"default:0"`
-	CustomHeader  []CustomHeader        `json:"custom_header" gorm:"serializer:json"`
-	ParamOverride *string               `json:"param_override"`
-	ChannelProxy  *string               `json:"channel_proxy"`
-	Stats         *StatsChannel         `json:"stats,omitempty" gorm:"foreignKey:ChannelID"`
-	MatchRegex    *string               `json:"match_regex"`
+	ID            int                    `json:"id" gorm:"primaryKey"`
+	Name          string                 `json:"name" gorm:"unique;not null"`
+	Type          outbound.OutboundType  `json:"type"`
+	Enabled       bool                   `json:"enabled" gorm:"default:true"`
+	BaseUrls      []BaseUrl              `json:"base_urls" gorm:"serializer:json"`
+	Keys          []*ChannelKey          `json:"keys" gorm:"foreignKey:ChannelID"`
+	Model         string                 `json:"model"`
+	CustomModel   string                 `json:"custom_model"`
+	Proxy         bool                   `json:"proxy" gorm:"default:false"`
+	AutoSync      bool                   `json:"auto_sync" gorm:"default:false"`
+	AutoGroup     AutoGroupType          `json:"auto_group" gorm:"default:0"`
+	CustomHeader  []CustomHeader         `json:"custom_header" gorm:"serializer:json"`
+	ParamOverride *string                `json:"param_override"`
+	ChannelProxy  *string                `json:"channel_proxy"`
+	Stats         *StatsChannel          `json:"stats,omitempty" gorm:"foreignKey:ChannelID"`
+	MatchRegex    *string                `json:"match_regex"`
 }
 
 type BaseUrl struct {
@@ -133,7 +133,7 @@ func (c *Channel) GetChannelKey() ChannelKey {
 	bestSet := false
 
 	for _, k := range c.Keys {
-		if !k.Enabled || k.ChannelKey == "" {
+		if k == nil || !k.Enabled || k.ChannelKey == "" {
 			continue
 		}
 		if k.StatusCode == 429 && k.LastUseTimeStamp > 0 {
@@ -142,7 +142,7 @@ func (c *Channel) GetChannelKey() ChannelKey {
 			}
 		}
 		if !bestSet || k.TotalCost < bestCost {
-			best = k
+			best = *k
 			bestCost = k.TotalCost
 			bestSet = true
 		}

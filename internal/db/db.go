@@ -43,10 +43,19 @@ func InitDB(dbType, dsn string, debug bool) error {
 		return err
 	}
 
-	sqlDB.SetMaxIdleConns(10)
-	sqlDB.SetMaxOpenConns(100)
-	sqlDB.SetConnMaxLifetime(time.Hour)
-	sqlDB.SetConnMaxIdleTime(10 * time.Minute)
+	if dbType == "sqlite" {
+		// SQLite is an embedded database, conservative connection pool settings to avoid lock contention
+		sqlDB.SetMaxOpenConns(1)    // Avoid write lock contention
+		sqlDB.SetMaxIdleConns(1)
+		sqlDB.SetConnMaxLifetime(0) // Embedded DB doesn't need connection recycling
+		sqlDB.SetConnMaxIdleTime(0)
+	} else {
+		// MySQL/PostgreSQL connection pool settings
+		sqlDB.SetMaxIdleConns(10)
+		sqlDB.SetMaxOpenConns(100)
+		sqlDB.SetConnMaxLifetime(time.Hour)
+		sqlDB.SetConnMaxIdleTime(10 * time.Minute)
+	}
 
 	if err := migrate.BeforeAutoMigrate(db); err != nil {
 		return err
@@ -87,12 +96,13 @@ func initSQLite(path string, config *gorm.Config) (*gorm.DB, error) {
 	params := []string{
 		"_journal_mode=WAL",
 		"_synchronous=NORMAL",
-		"_cache_size=10000",
+		"_cache_size=50000",    // Increased from 10000 to ~200MB for better I/O performance
 		"_busy_timeout=5000",
 		"_foreign_keys=ON",
 		"_auto_vacuum=INCREMENTAL",
 		"_mmap_size=268435456",
 		"_locking_mode=NORMAL",
+		"_temp_store=MEMORY",   // Store temporary data in memory instead of disk
 	}
 	return gorm.Open(sqlite.Open(path+"?"+strings.Join(params, "&")), config)
 }

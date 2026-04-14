@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bestruirui/octopus/internal/db"
@@ -26,6 +28,30 @@ var relayLogSubscribersLock sync.RWMutex
 
 var relayLogStreamTokens = make(map[string]struct{})
 var relayLogStreamTokensLock sync.RWMutex
+
+// atomicRelayLogEnabled caches the relay log enabled setting to avoid frequent SettingGetBool calls.
+var atomicRelayLogEnabled atomic.Bool
+
+// init initializes the atomic cache with default value.
+func init() {
+	atomicRelayLogEnabled.Store(true) // default to enabled
+}
+
+// RefreshRelayLogConfig refreshes the atomic cache for relay log enabled setting.
+// Should be called when the setting is changed.
+func RefreshRelayLogConfig() {
+	enabledStr, err := SettingGetString(model.SettingKeyRelayLogKeepEnabled)
+	if err != nil {
+		atomicRelayLogEnabled.Store(true) // default to enabled
+		return
+	}
+	enabled, err := strconv.ParseBool(enabledStr)
+	if err != nil {
+		atomicRelayLogEnabled.Store(true) // default to enabled
+		return
+	}
+	atomicRelayLogEnabled.Store(enabled)
+}
 
 func RelayLogStreamTokenCreate() (string, error) {
 	bytes := make([]byte, 32)
@@ -115,10 +141,7 @@ func relayLogFlushToDB(ctx context.Context) error {
 }
 
 func RelayLogAdd(ctx context.Context, relayLog model.RelayLog) error {
-	enabled, err := SettingGetBool(model.SettingKeyRelayLogKeepEnabled)
-	if err != nil {
-		return err
-	}
+	enabled := atomicRelayLogEnabled.Load()
 	maxSize := relayLogMaxSize
 	if !enabled {
 		maxSize = relayLogMaxSizeNoDB
@@ -183,7 +206,25 @@ func relayLogCleanup(ctx context.Context) error {
 	}
 
 	cutoffTime := time.Now().Add(-time.Duration(keepPeriod) * 24 * time.Hour).Unix()
-	return db.GetDB().WithContext(ctx).Where("time < ?", cutoffTime).Delete(&model.RelayLog{}).Error
+	batchSize := 1000
+
+	// Batch delete to avoid long write locks that block other operations
+	for {
+		result := db.GetDB().WithContext(ctx).Where("time < ?", cutoffTime).Limit(batchSize).Delete(&model.RelayLog{})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected < int64(batchSize) {
+			break // All expired logs deleted
+		}
+	}
+
+	// Run incremental vacuum to reclaim disk space from deleted rows
+	// This is a no-op for non-SQLite databases
+	if db.GetDB().Dialector.Name() == "sqlite" {
+		db.GetDB().Exec("PRAGMA incremental_vacuum(1000)")
+	}
+	return nil
 }
 
 // RelayLogList 查询日志列表，支持可选的时间范围过滤
