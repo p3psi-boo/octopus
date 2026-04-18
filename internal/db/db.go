@@ -18,7 +18,13 @@ var db *gorm.DB
 
 func InitDB(dbType, dsn string, debug bool) error {
 	var err error
-	gormConfig := gorm.Config{Logger: logger.Discard}
+	// PrepareStmt caches prepared statements; SkipDefaultTransaction avoids
+	// implicit BEGIN/COMMIT on single queries for non-SQLite backends.
+	gormConfig := gorm.Config{
+		Logger:                 logger.Discard,
+		PrepareStmt:            true,
+		SkipDefaultTransaction: true,
+	}
 	if debug {
 		gormConfig.Logger = logger.Default.LogMode(logger.Info)
 	}

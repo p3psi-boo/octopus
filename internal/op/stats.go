@@ -212,6 +212,8 @@ func StatsDailyUpdate(ctx context.Context, metrics model.StatsMetrics) error {
 }
 
 func StatsTotalUpdate(metrics model.StatsMetrics) error {
+	// TODO: Replace mutex with per-field atomic counters once StatsMetrics
+	// float64 fields (InputCost/OutputCost) are converted to int64 (e.g. microcents).
 	statsTotalCacheLock.Lock()
 	defer statsTotalCacheLock.Unlock()
 	if statsTotalCache.ID == 0 {

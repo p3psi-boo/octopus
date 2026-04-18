@@ -335,10 +335,18 @@ func (ra *relayAttempt) handleStreamResponse(ctx context.Context, response *http
 		readCfg := &sse.ReadConfig{MaxEventSize: maxSSEEventSize}
 		for ev, err := range sse.Read(response.Body, readCfg) {
 			if err != nil {
-				results <- sseReadResult{err: err}
+				// Use select to avoid blocking on channel send when client disconnects
+				select {
+				case results <- sseReadResult{err: err}:
+				case <-ctx.Done():
+				}
 				return
 			}
-			results <- sseReadResult{data: ev.Data}
+			select {
+			case results <- sseReadResult{data: ev.Data}:
+			case <-ctx.Done():
+				return
+			}
 		}
 	}()
 

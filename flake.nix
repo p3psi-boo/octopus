@@ -38,6 +38,8 @@
             ];
 
             shellHook = ''
+              export GOPATH="$HOME/go"
+              export GOMODCACHE="$HOME/go/pkg/mod"
               echo "🐙 Octopus DevShell"
               echo "Go version: $(go version)"
               echo ""
@@ -50,8 +52,7 @@
             '';
 
             # Set up Go environment
-            GOROOT = "${goVersion}";
-            GOPATH = "${builtins.getEnv "HOME"}/go";
+            GOROOT = "${goVersion}/share/go";
           };
         };
     };

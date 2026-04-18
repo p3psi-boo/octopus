@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"sync"
+	"time"
 
 	"github.com/bestruirui/octopus/internal/model"
 	"github.com/bestruirui/octopus/internal/op"
@@ -107,7 +108,16 @@ func clonedDefaultTransport() (*http.Transport, error) {
 	if !ok {
 		return nil, fmt.Errorf("default transport is not *http.Transport")
 	}
-	return transport.Clone(), nil
+	cloned := transport.Clone()
+	// Raise pool limits from Go defaults (MaxIdleConnsPerHost=2) to avoid
+	// excessive connection churn under concurrent LLM proxy traffic.
+	cloned.MaxIdleConns = 128
+	cloned.MaxIdleConnsPerHost = 64
+	cloned.MaxConnsPerHost = 128
+	cloned.IdleConnTimeout = 90 * time.Second
+	cloned.TLSHandshakeTimeout = 10 * time.Second
+	cloned.ForceAttemptHTTP2 = true
+	return cloned, nil
 }
 
 func newHTTPClientNoProxy() (*http.Client, error) {

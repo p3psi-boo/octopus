@@ -84,42 +84,31 @@ func (b *Weighted) Candidates(items []model.GroupItem) []model.GroupItem {
 		return nil
 	}
 
-	// 构建加权随机排序
-	type weightedItem struct {
-		item   model.GroupItem
-		score  float64
-	}
-
-	totalWeight := 0
-	for _, item := range items {
-		w := item.Weight
-		if w <= 0 {
-			w = 1
-		}
-		totalWeight += w
-	}
-
-	scored := make([]weightedItem, n)
-	for i, item := range items {
-		w := item.Weight
-		if w <= 0 {
-			w = 1
-		}
-		// 给每个 item 一个加权随机分数：weight/totalWeight 作为概率基础，加上随机扰动
-		scored[i] = weightedItem{
-			item:  item,
-			score: rand.Float64() * float64(w) / float64(totalWeight),
-		}
-	}
-
-	// 按分数降序排列（分数越高优先级越高）
-	sort.Slice(scored, func(i, j int) bool {
-		return scored[i].score > scored[j].score
-	})
-
+	// Weighted Fisher-Yates shuffle: O(n) single pass, no intermediate struct or sort
 	result := make([]model.GroupItem, n)
-	for i := range scored {
-		result[i] = scored[i].item
+	copy(result, items)
+	for i := n - 1; i > 0; i-- {
+		totalW := 0
+		for j := 0; j <= i; j++ {
+			w := result[j].Weight
+			if w <= 0 {
+				w = 1
+			}
+			totalW += w
+		}
+		r := rand.Intn(totalW)
+		cumulative := 0
+		for j := 0; j <= i; j++ {
+			w := result[j].Weight
+			if w <= 0 {
+				w = 1
+			}
+			cumulative += w
+			if r < cumulative {
+				result[i], result[j] = result[j], result[i]
+				break
+			}
+		}
 	}
 	return result
 }

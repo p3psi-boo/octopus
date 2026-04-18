@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/bestruirui/octopus/internal/client"
 	"github.com/bestruirui/octopus/internal/model"
@@ -13,6 +14,9 @@ import (
 	"github.com/bestruirui/octopus/internal/utils/xstrings"
 	"github.com/dlclark/regexp2"
 )
+
+// Avoid recompiling the same regex pattern on every request
+var regexpCache sync.Map
 
 func ChannelHttpClient(channel *model.Channel) (*http.Client, error) {
 	if channel == nil {
@@ -106,10 +110,17 @@ func ChannelAutoGroup(channel *model.Channel, ctx context.Context) {
 				break
 			}
 
-			re, err := regexp2.Compile(group.MatchRegex, regexp2.ECMAScript)
-			if err != nil {
-				log.Warnf("compile regex failed (channel=%d group=%d regex=%q): %v", channel.ID, group.ID, group.MatchRegex, err)
-				continue
+			var re *regexp2.Regexp
+			if cached, ok := regexpCache.Load(group.MatchRegex); ok {
+				re = cached.(*regexp2.Regexp)
+			} else {
+				var err error
+				re, err = regexp2.Compile(group.MatchRegex, regexp2.ECMAScript)
+				if err != nil {
+					log.Warnf("compile regex failed (channel=%d group=%d regex=%q): %v", channel.ID, group.ID, group.MatchRegex, err)
+					continue
+				}
+				regexpCache.Store(group.MatchRegex, re)
 			}
 			for _, modelName := range channelModelNames {
 				matched, err := re.MatchString(modelName)
