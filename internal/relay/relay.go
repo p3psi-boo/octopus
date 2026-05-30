@@ -373,7 +373,6 @@ func (ra *relayAttempt) writeStream(ctx context.Context, clientStream streams.St
 			case <-ctx.Done():
 			}
 		}
-		}
 	}()
 
 	firstTokenTimeoutSec := ra.group.FirstTokenTimeOut

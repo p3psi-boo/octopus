@@ -27,8 +27,9 @@ type RelayMetrics struct {
 	InternalResponse []byte
 
 	// 统计指标
-	ActualModel string
-	Stats       model.StatsMetrics
+	ActualModel  string
+	ParamOverride string
+	Stats        model.StatsMetrics
 }
 
 func (m *RelayMetrics) RecordUsage(usage *llm.Usage) {

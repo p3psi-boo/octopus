@@ -32,8 +32,8 @@ func ChannelCreate(channel *model.Channel, ctx context.Context) error {
 	}
 	channelCache.Set(channel.ID, *channel)
 	for _, k := range channel.Keys {
-		if k != nil && k.ID != 0 {
-			channelKeyCache.Set(k.ID, *k)
+		if k.ID != 0 {
+			channelKeyCache.Set(k.ID, k)
 		}
 	}
 	return nil
@@ -49,9 +49,9 @@ func ChannelKeyUpdate(key model.ChannelKey) error {
 		return fmt.Errorf("channel not found")
 	}
 	found := false
-	for _, k := range ch.Keys {
+	for i, k := range ch.Keys {
 		if k.ID == key.ID {
-			*k = key
+			ch.Keys[i] = key
 			found = true
 			break
 		}
@@ -403,8 +403,8 @@ func channelRefreshCache(ctx context.Context) error {
 	for _, channel := range channels {
 		channelCache.Set(channel.ID, channel)
 		for _, k := range channel.Keys {
-			if k != nil && k.ID != 0 {
-				channelKeyCache.Set(k.ID, *k)
+			if k.ID != 0 {
+				channelKeyCache.Set(k.ID, k)
 			}
 		}
 	}
@@ -414,7 +414,7 @@ func channelRefreshCache(ctx context.Context) error {
 func channelRefreshCacheByID(id int, ctx context.Context) error {
 	if old, ok := channelCache.Get(id); ok {
 		for _, k := range old.Keys {
-			if k != nil && k.ID != 0 {
+			if k.ID != 0 {
 				channelKeyCache.Del(k.ID)
 			}
 		}
@@ -428,8 +428,8 @@ func channelRefreshCacheByID(id int, ctx context.Context) error {
 	}
 	channelCache.Set(channel.ID, channel)
 	for _, k := range channel.Keys {
-		if k != nil && k.ID != 0 {
-			channelKeyCache.Set(k.ID, *k)
+		if k.ID != 0 {
+			channelKeyCache.Set(k.ID, k)
 		}
 	}
 	return nil
