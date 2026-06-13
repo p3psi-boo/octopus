@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -24,6 +25,11 @@ import (
 	"github.com/looplj/axonhub/llm/pipeline/stream"
 	"github.com/looplj/axonhub/llm/streams"
 	"github.com/looplj/axonhub/llm/transformer"
+)
+
+const (
+	maxStreamLogEventBytes      = 4 << 20
+	maxStreamLogUsageEventBytes = 256 << 10
 )
 
 // Handler 返回处理入站请求并转发到上游服务的 Gin handler。
@@ -175,12 +181,16 @@ func (ra *relayAttempt) run() (bool, error) {
 	if fwdErr == nil && upstreamStatusCode == 0 {
 		upstreamStatusCode = http.StatusOK
 	}
-	ra.usedKey.StatusCode = upstreamStatusCode
-	ra.usedKey.LastUseTimeStamp = time.Now().Unix()
 
 	if fwdErr == nil {
-		ra.usedKey.TotalCost += ra.metrics.Stats.InputCost + ra.metrics.Stats.OutputCost
-		op.ChannelKeyUpdate(ra.usedKey)
+		if err := op.ChannelKeyRecordResult(
+			ra.usedKey,
+			upstreamStatusCode,
+			time.Now().Unix(),
+			ra.metrics.Stats.InputCost+ra.metrics.Stats.OutputCost,
+		); err != nil {
+			log.Warnf("failed to update channel key runtime stats: %v", err)
+		}
 
 		span.End(dbmodel.AttemptSuccess, "")
 		op.StatsChannelUpdate(ra.channel.ID, dbmodel.StatsMetrics{
@@ -192,7 +202,9 @@ func (ra *relayAttempt) run() (bool, error) {
 		return false, nil
 	}
 
-	op.ChannelKeyUpdate(ra.usedKey)
+	if err := op.ChannelKeyRecordResult(ra.usedKey, upstreamStatusCode, time.Now().Unix(), 0); err != nil {
+		log.Warnf("failed to update channel key runtime stats: %v", err)
+	}
 	span.End(dbmodel.AttemptFailed, fwdErr.Error())
 	op.StatsChannelUpdate(ra.channel.ID, dbmodel.StatsMetrics{
 		WaitTime:      span.Duration().Milliseconds(),
@@ -239,7 +251,6 @@ func (ra *relayAttempt) forward() (int, error) {
 	if ra.internalRequest.RawRequest == nil {
 		return 0, fmt.Errorf("missing raw request")
 	}
-
 
 	httpClient, err := helper.ChannelHttpClient(ra.channel)
 	if err != nil {
@@ -336,6 +347,8 @@ func (ra *relayAttempt) writeStream(ctx context.Context, clientStream streams.St
 
 	firstToken := true
 	responseEvents := make([]*httpclient.StreamEvent, 0, 8)
+	responseEventBytes := 0
+	responseEventsTruncated := false
 	type sseReadResult struct {
 		event *httpclient.StreamEvent
 		err   error
@@ -406,6 +419,9 @@ func (ra *relayAttempt) writeStream(ctx context.Context, clientStream streams.St
 				}
 				// 客户端请求流式时，pipeline 只负责边转边写，不会自动生成完整响应体。
 				// 这里复用同一个 inbound 聚合器把已经写给客户端的事件合成最终 body，日志只落一次最终响应。
+				if responseEventsTruncated {
+					log.Warnf("stream response log aggregation truncated after %d bytes", maxStreamLogEventBytes)
+				}
 				responseBody, meta, err := ra.inAdapter.AggregateStreamChunks(context.WithoutCancel(ctx), responseEvents)
 				if err != nil {
 					log.Warnf("failed to aggregate stream response for log: %v", err)
@@ -424,7 +440,9 @@ func (ra *relayAttempt) writeStream(ctx context.Context, clientStream streams.St
 				continue
 			}
 			// 这里只临时保存 pipeline 已经转换好的客户端格式事件，正常结束后聚合成最终响应体用于日志；不会把分片逐条落库。
-			responseEvents = append(responseEvents, r.event)
+			if !captureStreamEventForLog(&responseEvents, &responseEventBytes, r.event) {
+				responseEventsTruncated = true
+			}
 			if firstToken {
 				ra.metrics.FirstTokenTime = time.Now()
 				firstToken = false
@@ -446,6 +464,28 @@ func (ra *relayAttempt) writeStream(ctx context.Context, clientStream streams.St
 		// Final flush for any remaining data
 		ra.c.Writer.Flush()
 	}
+}
+
+func captureStreamEventForLog(events *[]*httpclient.StreamEvent, totalBytes *int, event *httpclient.StreamEvent) bool {
+	eventBytes := len(event.LastEventID) + len(event.Type) + len(event.Data)
+	if *totalBytes+eventBytes <= maxStreamLogEventBytes {
+		*events = append(*events, event)
+		*totalBytes += eventBytes
+		return true
+	}
+	if eventBytes <= maxStreamLogUsageEventBytes &&
+		*totalBytes+eventBytes <= maxStreamLogEventBytes+maxStreamLogUsageEventBytes &&
+		streamEventMayContainUsage(event) {
+		*events = append(*events, event)
+		*totalBytes += eventBytes
+	}
+	return false
+}
+
+func streamEventMayContainUsage(event *httpclient.StreamEvent) bool {
+	return bytes.Contains(event.Data, []byte(`"usage"`)) ||
+		bytes.Contains(event.Data, []byte(`"usage_metadata"`)) ||
+		bytes.Contains(event.Data, []byte(`"usageMetadata"`))
 }
 
 // relayPipelineMiddleware 承接 octopus 自己的通道级副作用：

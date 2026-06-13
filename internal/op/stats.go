@@ -25,14 +25,17 @@ var statsHourlyCache [24]model.StatsHourly
 var statsHourlyCacheLock sync.RWMutex
 
 var statsChannelCache = cache.New[int, model.StatsChannel](16)
+var statsChannelCacheUpdateLock sync.Mutex
 var statsChannelCacheNeedUpdate = make(map[int]struct{})
 var statsChannelCacheNeedUpdateLock sync.Mutex
 
 var statsModelCache = cache.New[int, model.StatsModel](16)
+var statsModelCacheUpdateLock sync.Mutex
 var statsModelCacheNeedUpdate = make(map[int]struct{})
 var statsModelCacheNeedUpdateLock sync.Mutex
 
 var statsAPIKeyCache = cache.New[int, model.StatsAPIKey](16)
+var statsAPIKeyCacheUpdateLock sync.Mutex
 var statsAPIKeyCacheNeedUpdate = make(map[int]struct{})
 var statsAPIKeyCacheNeedUpdateLock sync.Mutex
 
@@ -224,6 +227,7 @@ func StatsTotalUpdate(metrics model.StatsMetrics) error {
 }
 
 func StatsChannelUpdate(channelID int, metrics model.StatsMetrics) error {
+	statsChannelCacheUpdateLock.Lock()
 	channelCache, ok := statsChannelCache.Get(channelID)
 	if !ok {
 		channelCache = model.StatsChannel{
@@ -232,6 +236,8 @@ func StatsChannelUpdate(channelID int, metrics model.StatsMetrics) error {
 	}
 	channelCache.StatsMetrics.Add(metrics)
 	statsChannelCache.Set(channelID, channelCache)
+	statsChannelCacheUpdateLock.Unlock()
+
 	statsChannelCacheNeedUpdateLock.Lock()
 	statsChannelCacheNeedUpdate[channelID] = struct{}{}
 	statsChannelCacheNeedUpdateLock.Unlock()
@@ -258,14 +264,26 @@ func StatsHourlyUpdate(metrics model.StatsMetrics) error {
 }
 
 func StatsModelUpdate(stats model.StatsModel) error {
+	statsModelCacheUpdateLock.Lock()
 	modelCache, ok := statsModelCache.Get(stats.ID)
 	if !ok {
 		modelCache = model.StatsModel{
-			ID: stats.ID,
+			ID:        stats.ID,
+			Name:      stats.Name,
+			ChannelID: stats.ChannelID,
+		}
+	} else {
+		if stats.Name != "" {
+			modelCache.Name = stats.Name
+		}
+		if stats.ChannelID != 0 {
+			modelCache.ChannelID = stats.ChannelID
 		}
 	}
 	modelCache.StatsMetrics.Add(stats.StatsMetrics)
 	statsModelCache.Set(stats.ID, modelCache)
+	statsModelCacheUpdateLock.Unlock()
+
 	statsModelCacheNeedUpdateLock.Lock()
 	statsModelCacheNeedUpdate[stats.ID] = struct{}{}
 	statsModelCacheNeedUpdateLock.Unlock()
@@ -273,6 +291,7 @@ func StatsModelUpdate(stats model.StatsModel) error {
 }
 
 func StatsAPIKeyUpdate(apiKeyID int, metrics model.StatsMetrics) error {
+	statsAPIKeyCacheUpdateLock.Lock()
 	apiKeyCache, ok := statsAPIKeyCache.Get(apiKeyID)
 	if !ok {
 		apiKeyCache = model.StatsAPIKey{
@@ -281,6 +300,8 @@ func StatsAPIKeyUpdate(apiKeyID int, metrics model.StatsMetrics) error {
 	}
 	apiKeyCache.StatsMetrics.Add(metrics)
 	statsAPIKeyCache.Set(apiKeyID, apiKeyCache)
+	statsAPIKeyCacheUpdateLock.Unlock()
+
 	statsAPIKeyCacheNeedUpdateLock.Lock()
 	statsAPIKeyCacheNeedUpdate[apiKeyID] = struct{}{}
 	statsAPIKeyCacheNeedUpdateLock.Unlock()
@@ -288,10 +309,13 @@ func StatsAPIKeyUpdate(apiKeyID int, metrics model.StatsMetrics) error {
 }
 
 func StatsChannelDel(id int) error {
+	statsChannelCacheUpdateLock.Lock()
 	if _, ok := statsChannelCache.Get(id); !ok {
+		statsChannelCacheUpdateLock.Unlock()
 		return nil
 	}
 	statsChannelCache.Del(id)
+	statsChannelCacheUpdateLock.Unlock()
 	statsChannelCacheNeedUpdateLock.Lock()
 	delete(statsChannelCacheNeedUpdate, id)
 	statsChannelCacheNeedUpdateLock.Unlock()
@@ -299,10 +323,13 @@ func StatsChannelDel(id int) error {
 }
 
 func StatsAPIKeyDel(id int) error {
+	statsAPIKeyCacheUpdateLock.Lock()
 	if _, ok := statsAPIKeyCache.Get(id); !ok {
+		statsAPIKeyCacheUpdateLock.Unlock()
 		return nil
 	}
 	statsAPIKeyCache.Del(id)
+	statsAPIKeyCacheUpdateLock.Unlock()
 	statsAPIKeyCacheNeedUpdateLock.Lock()
 	delete(statsAPIKeyCacheNeedUpdate, id)
 	statsAPIKeyCacheNeedUpdateLock.Unlock()
@@ -322,31 +349,33 @@ func StatsTodayGet() model.StatsDaily {
 }
 
 func StatsChannelGet(id int) model.StatsChannel {
+	statsChannelCacheUpdateLock.Lock()
 	stats, ok := statsChannelCache.Get(id)
 	if !ok {
-		tmp := model.StatsChannel{
-			ChannelID: id,
-		}
-		statsChannelCache.Set(id, tmp)
+		stats = model.StatsChannel{ChannelID: id}
+		statsChannelCache.Set(id, stats)
+	}
+	statsChannelCacheUpdateLock.Unlock()
+	if !ok {
 		statsChannelCacheNeedUpdateLock.Lock()
 		statsChannelCacheNeedUpdate[id] = struct{}{}
 		statsChannelCacheNeedUpdateLock.Unlock()
-		return tmp
 	}
 	return stats
 }
 
 func StatsAPIKeyGet(id int) model.StatsAPIKey {
+	statsAPIKeyCacheUpdateLock.Lock()
 	stats, ok := statsAPIKeyCache.Get(id)
 	if !ok {
-		tmp := model.StatsAPIKey{
-			APIKeyID: id,
-		}
-		statsAPIKeyCache.Set(id, tmp)
+		stats = model.StatsAPIKey{APIKeyID: id}
+		statsAPIKeyCache.Set(id, stats)
+	}
+	statsAPIKeyCacheUpdateLock.Unlock()
+	if !ok {
 		statsAPIKeyCacheNeedUpdateLock.Lock()
 		statsAPIKeyCacheNeedUpdate[id] = struct{}{}
 		statsAPIKeyCacheNeedUpdateLock.Unlock()
-		return tmp
 	}
 	return stats
 }

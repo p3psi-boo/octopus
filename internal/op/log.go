@@ -16,12 +16,15 @@ import (
 )
 
 const relayLogMaxSize = 20
-const relayLogMaxSizeNoDB = 100 // 当不保存到数据库时，允许更大的缓存用于实时查询
+const relayLogMaxSizeNoDB = 100   // 当不保存到数据库时，允许更大的缓存用于实时查询
+const relayLogMaxPendingDB = 1000 // DB 异步写入跟不上时的内存保护上限
+const relayLogFlushTimeout = 30 * time.Second
 
 var relayLogCache = make([]model.RelayLog, 0, relayLogMaxSize)
 var relayLogCacheLock sync.Mutex
 
 var relayLogFlushLock sync.Mutex
+var relayLogFlushSignal = make(chan struct{}, 1)
 
 var relayLogSubscribers = make(map[chan model.RelayLog]struct{})
 var relayLogSubscribersLock sync.RWMutex
@@ -35,6 +38,24 @@ var atomicRelayLogEnabled atomic.Bool
 // init initializes the atomic cache with default value.
 func init() {
 	atomicRelayLogEnabled.Store(true) // default to enabled
+	go relayLogFlushWorker()
+}
+
+func relayLogFlushWorker() {
+	for range relayLogFlushSignal {
+		ctx, cancel := context.WithTimeout(context.Background(), relayLogFlushTimeout)
+		if err := relayLogFlushToDB(ctx); err != nil {
+			log.Warnf("relay log async flush failed: %v", err)
+		}
+		cancel()
+	}
+}
+
+func signalRelayLogFlush() {
+	select {
+	case relayLogFlushSignal <- struct{}{}:
+	default:
+	}
 }
 
 // RefreshRelayLogConfig refreshes the atomic cache for relay log enabled setting.
@@ -118,7 +139,6 @@ func relayLogFlushToDB(ctx context.Context) error {
 	}
 	batch := make([]model.RelayLog, len(relayLogCache))
 	copy(batch, relayLogCache)
-	flushedUpto := len(batch)
 	relayLogCacheLock.Unlock()
 
 	result := db.GetDB().WithContext(ctx).Create(&batch)
@@ -126,11 +146,20 @@ func relayLogFlushToDB(ctx context.Context) error {
 		return result.Error
 	}
 
+	flushedIDs := make(map[int64]struct{}, len(batch))
+	for _, item := range batch {
+		flushedIDs[item.ID] = struct{}{}
+	}
+
 	relayLogCacheLock.Lock()
-	if len(relayLogCache) >= flushedUpto {
-		relayLogCache = relayLogCache[flushedUpto:]
-	} else {
-		relayLogCache = relayLogCache[:0]
+	if len(relayLogCache) > 0 {
+		kept := relayLogCache[:0]
+		for _, item := range relayLogCache {
+			if _, flushed := flushedIDs[item.ID]; !flushed {
+				kept = append(kept, item)
+			}
+		}
+		relayLogCache = kept
 	}
 	if len(relayLogCache) == 0 {
 		relayLogCache = make([]model.RelayLog, 0, relayLogMaxSize)
@@ -140,29 +169,41 @@ func relayLogFlushToDB(ctx context.Context) error {
 	return nil
 }
 
-func RelayLogAdd(ctx context.Context, relayLog model.RelayLog) error {
+func RelayLogAdd(_ context.Context, relayLog model.RelayLog) error {
 	enabled := atomicRelayLogEnabled.Load()
 	maxSize := relayLogMaxSize
 	if !enabled {
 		maxSize = relayLogMaxSizeNoDB
 	}
 	relayLog.ID = snowflake.GenerateID()
-	go notifySubscribers(relayLog)
+	notifySubscribers(relayLog)
 
+	shouldFlush := false
+	dropped := 0
 	relayLogCacheLock.Lock()
 	relayLogCache = append(relayLogCache, relayLog)
 	if len(relayLogCache) >= maxSize {
 		if enabled {
-			relayLogCacheLock.Unlock()
-			return relayLogFlushToDB(ctx)
-		}
-		// 如果未启用日志保存，移除最旧的日志，保留最新的日志用于实时查询
-		keepSize := maxSize / 2
-		if len(relayLogCache) > keepSize {
-			relayLogCache = relayLogCache[len(relayLogCache)-keepSize:]
+			shouldFlush = true
+			if len(relayLogCache) > relayLogMaxPendingDB {
+				dropped = len(relayLogCache) - relayLogMaxPendingDB
+				relayLogCache = relayLogCache[dropped:]
+			}
+		} else {
+			// 如果未启用日志保存，移除最旧的日志，保留最新的日志用于实时查询
+			keepSize := maxSize / 2
+			if len(relayLogCache) > keepSize {
+				relayLogCache = relayLogCache[len(relayLogCache)-keepSize:]
+			}
 		}
 	}
 	relayLogCacheLock.Unlock()
+	if dropped > 0 {
+		log.Warnf("relay log pending cache exceeded %d, dropped %d oldest entries", relayLogMaxPendingDB, dropped)
+	}
+	if shouldFlush {
+		signalRelayLogFlush()
+	}
 	return nil
 }
 

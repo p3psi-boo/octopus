@@ -17,6 +17,7 @@ var channelCache = cache.New[int, model.Channel](16)
 var channelKeyCache = cache.New[int, model.ChannelKey](16)
 var channelKeyCacheNeedUpdate = make(map[int]struct{})
 var channelKeyCacheNeedUpdateLock sync.Mutex
+var channelKeyRuntimeUpdateLock sync.Mutex
 
 func ChannelList(ctx context.Context) ([]model.Channel, error) {
 	channels := make([]model.Channel, 0, channelCache.Len())
@@ -44,10 +45,14 @@ func ChannelKeyUpdate(key model.ChannelKey) error {
 	if key.ID == 0 || key.ChannelID == 0 {
 		return fmt.Errorf("invalid channel key")
 	}
+	channelKeyRuntimeUpdateLock.Lock()
+	defer channelKeyRuntimeUpdateLock.Unlock()
+
 	ch, ok := channelCache.Get(key.ChannelID)
 	if !ok {
 		return fmt.Errorf("channel not found")
 	}
+	ch.Keys = cloneChannelKeys(ch.Keys)
 	found := false
 	for i, k := range ch.Keys {
 		if k.ID == key.ID {
@@ -61,11 +66,65 @@ func ChannelKeyUpdate(key model.ChannelKey) error {
 	}
 	channelCache.Set(key.ChannelID, ch)
 	channelKeyCache.Set(key.ID, key)
-	channelKeyCacheNeedUpdateLock.Lock()
-	channelKeyCacheNeedUpdate[key.ID] = struct{}{}
-	channelKeyCacheNeedUpdateLock.Unlock()
+	markChannelKeyNeedUpdate(key.ID)
 	return nil
 }
+
+// ChannelKeyRecordResult applies runtime usage changes as a delta so concurrent
+// relay completions cannot overwrite each other's TotalCost or latest status.
+func ChannelKeyRecordResult(key model.ChannelKey, statusCode int, usedAt int64, costDelta float64) error {
+	if key.ID == 0 || key.ChannelID == 0 {
+		return fmt.Errorf("invalid channel key")
+	}
+
+	channelKeyRuntimeUpdateLock.Lock()
+	defer channelKeyRuntimeUpdateLock.Unlock()
+
+	ch, ok := channelCache.Get(key.ChannelID)
+	if !ok {
+		return fmt.Errorf("channel not found")
+	}
+	ch.Keys = cloneChannelKeys(ch.Keys)
+
+	var updated model.ChannelKey
+	found := false
+	for i, current := range ch.Keys {
+		if current.ID != key.ID {
+			continue
+		}
+		current.StatusCode = statusCode
+		current.LastUseTimeStamp = usedAt
+		current.TotalCost += costDelta
+		ch.Keys[i] = current
+		updated = current
+		found = true
+		break
+	}
+	if !found {
+		return fmt.Errorf("channel key %d not found in channel %d", key.ID, key.ChannelID)
+	}
+
+	channelCache.Set(key.ChannelID, ch)
+	channelKeyCache.Set(key.ID, updated)
+	markChannelKeyNeedUpdate(key.ID)
+	return nil
+}
+
+func cloneChannelKeys(keys []model.ChannelKey) []model.ChannelKey {
+	if len(keys) == 0 {
+		return nil
+	}
+	cp := make([]model.ChannelKey, len(keys))
+	copy(cp, keys)
+	return cp
+}
+
+func markChannelKeyNeedUpdate(keyID int) {
+	channelKeyCacheNeedUpdateLock.Lock()
+	channelKeyCacheNeedUpdate[keyID] = struct{}{}
+	channelKeyCacheNeedUpdateLock.Unlock()
+}
+
 func ChannelBaseUrlUpdate(channelID int, baseUrl []model.BaseUrl) error {
 	ch, ok := channelCache.Get(channelID)
 	if !ok {
