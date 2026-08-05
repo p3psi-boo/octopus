@@ -375,6 +375,8 @@
             "firstTokenTimeOutHint": "Unit: seconds, only effective for streaming response, 0 = no limit",
             "sessionKeepTime": "Session Keep Time",
             "sessionKeepTimeHint": "Unit: seconds, keeps using the same channel within a session, 0 = disabled",
+            "circuitBreakerEnabled": "Enable Circuit Breaker",
+            "circuitBreakerEnabledHint": "When disabled, this group will skip circuit breaker checks, even if channels fail consecutively they won't be circuit broken",
             "items": "Selected Models",
             "addItem": "Add Model",
             "autoAdd": "Auto Add",

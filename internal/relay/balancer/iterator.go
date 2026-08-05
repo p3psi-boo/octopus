@@ -10,10 +10,11 @@ import (
 // Iterator 统一的负载均衡迭代器
 // 内部编排：策略排序 + 粘性优先 + 决策追踪
 type Iterator struct {
-	candidates []model.GroupItem
-	index      int
-	stickyIdx  int    // 粘性通道在 candidates 中的位置，-1 表示无
-	modelName  string // 请求模型名（用于熔断检查）
+	candidates            []model.GroupItem
+	index                 int
+	stickyIdx             int    // 粘性通道在 candidates 中的位置，-1 表示无
+	modelName             string // 请求模型名（用于熔断检查）
+	circuitBreakerEnabled bool   // 是否启用熔断器
 
 	// 内嵌追踪
 	attempts []model.ChannelAttempt
@@ -46,10 +47,11 @@ func NewIterator(group model.Group, apiKeyID int, requestModel string) *Iterator
 	}
 
 	return &Iterator{
-		candidates: candidates,
-		index:      -1,
-		stickyIdx:  stickyIdx,
-		modelName:  requestModel,
+		candidates:            candidates,
+		index:                 -1,
+		stickyIdx:             stickyIdx,
+		modelName:             requestModel,
+		circuitBreakerEnabled: group.CircuitBreakerEnabled,
 	}
 }
 
@@ -96,6 +98,9 @@ func (it *Iterator) Skip(channelID, channelKeyID int, channelName, msg string) {
 
 // SkipCircuitBreak 检查熔断状态，若已熔断自动记录（含剩余冷却时间）并返回 true
 func (it *Iterator) SkipCircuitBreak(channelID, channelKeyID int, channelName string) bool {
+	if !it.circuitBreakerEnabled {
+		return false
+	}
 	modelName := it.candidates[it.index].ModelName
 	tripped, remaining := IsTripped(channelID, channelKeyID, modelName)
 	if !tripped {

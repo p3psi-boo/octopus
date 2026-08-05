@@ -8,6 +8,7 @@ import { useModelChannelList, type LLMChannel } from '@/api/endpoints/model';
 import { Button } from '@/components/ui/button';
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
+import { Switch } from '@/components/ui/switch';
 import { Accordion, AccordionContent, AccordionItem } from '@/components/ui/accordion';
 import { cn } from '@/lib/utils';
 import { getModelIcon } from '@/lib/model-icons';
@@ -26,6 +27,7 @@ export type GroupEditorValues = {
     mode: GroupMode;
     first_token_time_out: number;
     session_keep_time: number;
+    circuit_breaker_enabled: boolean;
     members: SelectedMember[];
 };
 
@@ -257,6 +259,7 @@ export function GroupEditor({
     const [mode, setMode] = useState<GroupMode>((initial?.mode ?? 1) as GroupMode);
     const [firstTokenTimeOut, setFirstTokenTimeOut] = useState<number>(initial?.first_token_time_out ?? 0);
     const [sessionKeepTime, setSessionKeepTime] = useState<number>(initial?.session_keep_time ?? 0);
+    const [circuitBreakerEnabled, setCircuitBreakerEnabled] = useState<boolean>(initial?.circuit_breaker_enabled ?? true);
     const [selectedMembers, setSelectedMembers] = useState<SelectedMember[]>(initial?.members ?? []);
     const [removingIds, setRemovingIds] = useState<Set<string>>(new Set());
 
@@ -340,6 +343,7 @@ export function GroupEditor({
             mode,
             first_token_time_out: firstTokenTimeOut,
             session_keep_time: sessionKeepTime,
+            circuit_breaker_enabled: circuitBreakerEnabled,
             members: selectedMembers,
         });
     };
@@ -441,6 +445,28 @@ export function GroupEditor({
                                 }}
                                 className="rounded-xl"
                             />
+                        </Field>
+                        <Field>
+                            <div className="flex items-center gap-2">
+                                <Switch
+                                    id="group-circuit-breaker-enabled"
+                                    checked={circuitBreakerEnabled}
+                                    onCheckedChange={setCircuitBreakerEnabled}
+                                />
+                                <FieldLabel htmlFor="group-circuit-breaker-enabled" className="cursor-pointer">
+                                    {t('form.circuitBreakerEnabled')}
+                                    <TooltipProvider>
+                                        <Tooltip>
+                                            <TooltipTrigger asChild>
+                                                <HelpCircle className="size-4 text-muted-foreground cursor-help" />
+                                            </TooltipTrigger>
+                                            <TooltipContent>
+                                                {t('form.circuitBreakerEnabledHint')}
+                                            </TooltipContent>
+                                        </Tooltip>
+                                    </TooltipProvider>
+                                </FieldLabel>
+                            </div>
                         </Field>
                     </div>
 

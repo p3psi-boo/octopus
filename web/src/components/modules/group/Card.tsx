@@ -55,6 +55,7 @@ function EditDialogContent({ group, displayMembers, isSubmitting, onSubmit }: Ed
                         mode: group.mode,
                         first_token_time_out: group.first_token_time_out ?? 0,
                         session_keep_time: group.session_keep_time ?? 0,
+                        circuit_breaker_enabled: group.circuit_breaker_enabled ?? true,
                         members: displayMembers,
                     }}
                     submitText={t('detail.actions.save')}
@@ -222,6 +223,7 @@ export function GroupCard({ group }: { group: Group }) {
         if (nextRegex !== (group.match_regex ?? '')) payload.match_regex = nextRegex;
         if (nextFirstTokenTimeOut !== (group.first_token_time_out ?? 0)) payload.first_token_time_out = nextFirstTokenTimeOut;
         if (nextSessionKeepTime !== (group.session_keep_time ?? 0)) payload.session_keep_time = nextSessionKeepTime;
+        if (values.circuit_breaker_enabled !== (group.circuit_breaker_enabled ?? true)) payload.circuit_breaker_enabled = values.circuit_breaker_enabled;
         if (items_to_add.length) payload.items_to_add = items_to_add;
         if (items_to_update.length) payload.items_to_update = items_to_update;
         if (items_to_delete.length) payload.items_to_delete = items_to_delete;

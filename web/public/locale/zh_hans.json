@@ -375,6 +375,8 @@
             "firstTokenTimeOutHint": "单位秒，仅流式响应起效，0 表示不限制",
             "sessionKeepTime": "会话保持",
             "sessionKeepTimeHint": "单位秒，会话期间保持使用同一渠道，0 表示禁用",
+            "circuitBreakerEnabled": "启用熔断器",
+            "circuitBreakerEnabledHint": "关闭后该分组将跳过熔断检查，即使渠道连续失败也不会被熔断",
             "items": "已选模型",
             "addItem": "添加模型",
             "autoAdd": "自动添加",
